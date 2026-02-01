@@ -1,79 +1,91 @@
-# BLE Heart Rate Broadcast (macOS)
+# BLE 心率广播（macOS）
 
-Use Python on macOS to scan BLE heart-rate sources and visualize them as breathing LEDs plus live charts.
+在 macOS 上用 Python 扫描 BLE 心率广播，并以「呼吸灯 + 曲线」形式可视化。
 
-## Structure
+## 目录结构
 
-- `ble_hr_broadcast.py` Scan advertisements and try parsing HR from payloads
-- `ble_hr_gatt.py` Subscribe via GATT (recommended when devices support it)
-- `ble_hr_corebluetooth.py` CoreBluetooth listener (macOS)
-- `hr_simulator.py` Generate simulated HR stream into a local file
-- `hr_display.py` UI: breathing LEDs + live charts + score timeline
-- `hr_scan_sources.py` Scan & save HR sources for later preferred scanning
+- `ble_hr_broadcast.py` 扫描广播包并尝试从 payload 解析心率
+- `ble_hr_gatt.py` 通过 GATT 订阅心率（设备支持时更稳定）
+- `ble_hr_corebluetooth.py` CoreBluetooth 监听器（macOS）
+- `hr_simulator.py` 生成本地模拟心率数据流
+- `hr_display.py` UI：呼吸灯 + 实时曲线 + 对战评分
+- `hr_scan_sources.py` 扫描并保存心率数据源，便于下次优先连接
+- `start_live.sh` 一键启动监听 + UI
 
-## Requirements
+## 依赖
 
 - Python 3.9+
 - `bleak`
-- `tkinter` (for `hr_display.py`; system Python includes it, Homebrew Python needs python-tk)
+- `tkinter`（`hr_display.py` 需要；系统 Python 自带，Homebrew Python 需额外安装）
 
-Install dependencies:
+安装依赖：
 
 ```bash
 python3 -m pip install bleak
 ```
 
-If you use Homebrew Python (`/opt/homebrew/bin/python3.13`), install Tk:
+如果使用 Homebrew Python（如 `/opt/homebrew/bin/python3.13`），需安装 Tk：
 
 ```bash
 brew install python-tk@3.13
 ```
 
-## Usage
+## 一键启动（推荐）
 
-Scan advertisements:
+```bash
+./start_live.sh
+```
+
+说明：
+- 自动启动心率监听与 UI
+- 优先使用 `./.venv/bin/python`
+- 日志输出到 `data/hr_corebluetooth.log`
+
+## 使用方法
+
+扫描广播包：
 
 ```bash
 python3 ble_hr_broadcast.py
 ```
 
-Filter by name:
+按设备名过滤：
 
 ```bash
 python3 ble_hr_broadcast.py --name Mi
 ```
 
-Filter by address:
+按地址过滤：
 
 ```bash
 python3 ble_hr_broadcast.py --address XX:XX:XX:XX:XX:XX
 ```
 
-Scan for N seconds:
+扫描 N 秒：
 
 ```bash
 python3 ble_hr_broadcast.py --timeout 30
 ```
 
-Use GATT (recommended):
+使用 GATT（推荐）：
 
 ```bash
 python3 ble_hr_gatt.py --name "Xiaomi Smart Band"
 ```
 
-Or by address:
+或按地址：
 
 ```bash
 python3 ble_hr_gatt.py --address XX:XX:XX:XX:XX:XX
 ```
 
-Use CoreBluetooth (macOS):
+使用 CoreBluetooth（macOS）：
 
 ```bash
 python3 ble_hr_corebluetooth.py
 ```
 
-Save / prefer previously scanned sources:
+保存 / 优先已扫描过的数据源：
 
 ```bash
 ./.venv/bin/python ble_hr_corebluetooth.py \
@@ -82,7 +94,7 @@ Save / prefer previously scanned sources:
   --scan-all
 ```
 
-Multiple devices:
+多设备同时监听：
 
 ```bash
 ./.venv/bin/python ble_hr_corebluetooth.py \
@@ -93,9 +105,9 @@ Multiple devices:
   --file data/hr_stream.jsonl --truncate
 ```
 
-## Live HR + UI
+## 实时心率 + UI
 
-Stop the simulator, write real HR into a file, then start the UI:
+停止模拟器，写入真实心率，再启动 UI：
 
 ```bash
 ./.venv/bin/python ble_hr_corebluetooth.py --file data/hr_stream.jsonl --truncate
@@ -105,7 +117,7 @@ Stop the simulator, write real HR into a file, then start the UI:
 python3 hr_display.py --file data/hr_stream.jsonl
 ```
 
-Multi-player view (single window adapts; second panel hides after N seconds without data):
+多玩家模式（单窗口自动适配；第二个面板 N 秒无数据后隐藏）：
 
 ```bash
 python3 hr_display.py \
@@ -113,34 +125,34 @@ python3 hr_display.py \
   --hide-seconds 12
 ```
 
-UI controls:
-- **Scan all sources**: scans and saves to `data/hr_sources.json`; CoreBluetooth can prioritize these via `--sources-file`.
-- **Always on top**: keeps the window above others.
-- **Show logs**: toggles detailed log overlay.
-- **Inline timeline**: shows the score timeline below the players; otherwise it opens in a new window on Start.
-- **Timer**: enter minutes, Start begins a scoring session.
-Tip: pass `--listener-log data/hr_corebluetooth.log` to display connection logs in the overlay.
+UI 控件：
+- **Scan all sources**：扫描并保存数据源到 `data/hr_sources.json`
+- **Always on top**：窗口置顶
+- **Show logs**：显示/隐藏日志浮层
+- **Inline timeline**：分数曲线显示在主界面下方，否则 Start 后另起窗口
+- **Timer**：输入分钟数，点击 Start 开始对战评分
+提示：可加 `--listener-log data/hr_corebluetooth.log` 在 UI 里显示连接日志
 
-Scoring session:
-- Score = average + min + max (computed during the session).
-- Lower score wins.
-- The score timeline shows both curves with labels at the latest points (source name + current score).
+评分规则：
+- 分数 = 平均值 + 最小值 + 最大值（仅统计本次计时）
+- 分数越低胜出
+- 分数曲线会在末端标注数据源名称与当前分数
 
-## Simulation + UI
+## 模拟数据 + UI
 
-Generate a simulated HR stream:
+生成模拟心率：
 
 ```bash
 python3 hr_simulator.py --file data/hr_stream.jsonl
 ```
 
-Open the UI:
+打开 UI：
 
 ```bash
 python3 hr_display.py --file data/hr_stream.jsonl
 ```
 
-## Notes
+## 备注
 
-- The broadcast parser looks in `service_data` and `manufacturer_data` for standard HR payloads.
-- If no HR appears, the device likely does not embed HR in advertisements. Use GATT (`ble_hr_gatt.py`) instead.
+- 广播解析会从 `service_data` 与 `manufacturer_data` 中尝试提取标准心率 payload
+- 若广播中无心率，说明设备不在广播里附带 HR，建议使用 GATT（`ble_hr_gatt.py`）
