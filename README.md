@@ -156,3 +156,8 @@ python3 hr_display.py --file data/hr_stream.jsonl
 
 - 广播解析会从 `service_data` 与 `manufacturer_data` 中尝试提取标准心率 payload
 - 若广播中无心率，说明设备不在广播里附带 HR，建议使用 GATT（`ble_hr_gatt.py`）
+- Apple Watch 需要安装第三方应用并开启心率广播后才会出现在广播中；该应用会通过 iPhone 转发心率广播，本程序监听到的是 iPhone 转发的数据。示例应用：
+
+```
+https://apps.apple.com/tw/app/%E5%BF%83%E7%8E%87%E5%B9%BF%E6%92%AD-heart-rate-monitor/id6473728264
+```
