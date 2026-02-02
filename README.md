@@ -30,6 +30,8 @@ python3 -m pip install bleak
 brew install python-tk@3.13
 ```
 
+提示：macOS 自带的 `python3` 往往是 Tk 8.5，可能出现 UI 空白。建议使用 Homebrew Python + Tk 8.6 以上。
+
 ## 一键启动（推荐）
 
 ```bash

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -209,6 +210,10 @@ class HRDisplayApp:
         self.scan_script = os.path.join(os.path.dirname(__file__), "hr_scan_sources.py")
         self.tail = FileTail(data_file)
         self.listener_tail = FileTail(listener_log) if listener_log else None
+        self.debug_log = os.environ.get("HR_DEBUG_LOG")
+        self.debug_last_ts: float = 0.0
+        self.debug_chart_last_ts: float = 0.0
+        self.debug_theme_last_ts: float = 0.0
 
         self.players: dict = {}
         self.player_order: List[str] = []
@@ -229,11 +234,23 @@ class HRDisplayApp:
         self.session_end_time: Optional[float] = None
         self.session_duration: Optional[float] = None
         self.session_result: Optional[str] = None
+        self.bootstrap_last_attempt: float = 0.0
 
         self._setup_ui()
         self._load_sources()
         self._apply_restart_sources()
+        self._bootstrap_from_file()
         self._schedule_updates()
+
+    def _debug(self, message: str) -> None:
+        if not self.debug_log:
+            return
+        ts = time.strftime("%H:%M:%S")
+        try:
+            with open(self.debug_log, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {message}\n")
+        except Exception:
+            pass
 
     def _mean_hr_for_theme(self) -> Optional[float]:
         values = []
@@ -396,6 +413,14 @@ class HRDisplayApp:
 
         self.main_frame = tk.Frame(self.root, bg=BG)
         self.main_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.quick_status = tk.Label(
+            self.main_frame,
+            text="",
+            bg=BG,
+            fg=MUTED,
+            font=self.subtitle_font,
+        )
+        self.quick_status.pack(anchor="w", padx=6, pady=(0, 4))
         self.players_frame = tk.Frame(self.main_frame, bg=BG)
         self.players_frame.pack(fill="both", expand=True)
         self.players_grid = tk.Frame(self.players_frame, bg=BG)
@@ -427,6 +452,39 @@ class HRDisplayApp:
             self.players_frame.pack(fill="both", expand=True)
         else:
             self.inline_view["frame"].pack_forget()
+
+    def _bootstrap_from_file(self) -> None:
+        if not os.path.exists(self.data_file):
+            return
+        try:
+            with open(self.data_file, "r", encoding="utf-8") as f:
+                lines = deque(f, maxlen=200)
+        except Exception:
+            return
+        if not lines:
+            return
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+                bpm = int(payload.get("bpm"))
+                source = payload.get("source") or payload.get("device") or payload.get("id")
+                ts = float(payload.get("ts") or time.time())
+            except Exception:
+                continue
+            if source is None:
+                source = "unknown"
+            source_str = str(source)
+            if self.source_filter and not any(want in source_str.lower() for want in self.source_filter):
+                continue
+            player = self._ensure_player(source_str)
+            player.current_hr = bpm
+            player.last_sample_time = ts
+            player.history.append((ts, bpm))
+        if self.players:
+            self._layout_players()
 
     def _create_session_view(self, parent: tk.Widget) -> dict:
         frame = tk.Frame(parent, bg=BG)
@@ -790,7 +848,10 @@ class HRDisplayApp:
             self.last_layout_count = count
 
     def _update_data(self) -> None:
+        now = time.time()
         lines = self.tail.read_new_lines()
+        if lines:
+            self._debug(f"read {len(lines)} lines")
         for line in lines:
             line = line.strip()
             if not line:
@@ -808,7 +869,6 @@ class HRDisplayApp:
                 if not any(want in source_str.lower() for want in self.source_filter):
                     continue
             player = self._ensure_player(source_str)
-            now = time.time()
             player.current_hr = bpm
             player.last_sample_time = now
             player.history.append((now, bpm))
@@ -829,6 +889,15 @@ class HRDisplayApp:
                 self._append_log(f"{player.display_name}: {bpm} bpm")
                 player.last_log_time = now
                 player.last_log_hr = bpm
+            if (now - self.debug_last_ts) > 2.0:
+                self._debug(f"players={len(self.players)} order={len(self.player_order)} last={player.display_name}:{bpm}")
+                self.debug_last_ts = now
+
+        if not lines and not self.players:
+            if (now - self.bootstrap_last_attempt) > 2.0:
+                self.bootstrap_last_attempt = now
+                if os.path.exists(self.data_file) and os.path.getsize(self.data_file) > 0:
+                    self._bootstrap_from_file()
 
         cutoff = time.time() - self.window_secs
         for player in self.players.values():
@@ -1019,6 +1088,8 @@ class HRDisplayApp:
             w = canvas.winfo_width() or 420
             h = canvas.winfo_height() or 420
             size = min(w, h)
+            if (now - self.debug_last_ts) > 2.0:
+                self._debug(f"canvas={w}x{h} frame={player.frame.winfo_width()}x{player.frame.winfo_height()}")
             cx, cy = w / 2, h / 2
             scale = 0.68 + (0.55 * amp_scale) * intensity
             outer_r = size * 0.36 * scale
@@ -1089,6 +1160,15 @@ class HRDisplayApp:
         else:
             self.header_subtitle.config(text="breathing light + live chart")
 
+        if count == 0:
+            self.quick_status.config(text="Waiting for heart-rate data...")
+        else:
+            primary = self.players[self.player_order[0]]
+            if primary.current_hr is None:
+                self.quick_status.config(text=f"{primary.display_name}: -- bpm")
+            else:
+                self.quick_status.config(text=f"{primary.display_name}: {int(round(primary.current_hr))} bpm")
+
         if self.status_override_until and now < self.status_override_until:
             global_status = self.status_override_text or "RESTARTING"
         elif not statuses:
@@ -1124,6 +1204,7 @@ class HRDisplayApp:
         self.header_subtitle.configure(bg=bg, fg=muted)
         self.result_label.configure(bg=bg, fg=muted)
         self.main_frame.configure(bg=bg)
+        self.quick_status.configure(bg=bg, fg=muted)
         self.players_frame.configure(bg=bg)
         self.players_grid.configure(bg=bg)
         self._apply_session_theme(self.inline_view, bg, text, muted)
@@ -1142,6 +1223,20 @@ class HRDisplayApp:
         self.show_logs_check.configure(bg=bg, fg=text, activebackground=bg, activeforeground=text, selectcolor=bg)
         self.inline_check.configure(bg=bg, fg=text, activebackground=bg, activeforeground=text, selectcolor=bg)
         self.placeholder.configure(bg=bg, fg=muted)
+        if self.debug_log:
+            now = time.time()
+            if (now - self.debug_theme_last_ts) > 2.0:
+                self._debug(
+                    "theme bg={bg} text={text} muted={muted} title_fg={tf} subtitle_fg={sf} quick='{qt}'".format(
+                        bg=bg,
+                        text=text,
+                        muted=muted,
+                        tf=self.header_title.cget("fg"),
+                        sf=self.header_subtitle.cget("fg"),
+                        qt=self.quick_status.cget("text"),
+                    )
+                )
+                self.debug_theme_last_ts = now
 
     def _apply_session_theme(self, view: dict, bg: str, text: str, muted: str) -> None:
         view["frame"].configure(bg=bg)
@@ -1171,6 +1266,10 @@ class HRDisplayApp:
             canvas.delete("log")
             w = canvas.winfo_width() or 480
             h = canvas.winfo_height() or 320
+            now = time.time()
+            if (now - self.debug_chart_last_ts) > 2.0:
+                self._debug(f"chart canvas={w}x{h} frame={player.frame.winfo_width()}x{player.frame.winfo_height()}")
+                self.debug_chart_last_ts = now
 
             pad_l, pad_r, pad_t, pad_b = 56, 18, 44, 36
             x0, y0 = pad_l, pad_t
