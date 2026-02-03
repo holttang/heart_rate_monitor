@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -235,6 +236,8 @@ class HRDisplayApp:
         self.session_duration: Optional[float] = None
         self.session_result: Optional[str] = None
         self.bootstrap_last_attempt: float = 0.0
+        self.time_offset_var = tk.DoubleVar(value=0.0)
+        self.max_time_offset: float = 0.0
 
         self._setup_ui()
         self._load_sources()
@@ -423,6 +426,36 @@ class HRDisplayApp:
         self.quick_status.pack(anchor="w", padx=6, pady=(0, 4))
         self.players_frame = tk.Frame(self.main_frame, bg=BG)
         self.players_frame.pack(fill="both", expand=True)
+        self.time_nav_frame = tk.Frame(self.main_frame, bg=BG)
+        self.time_nav_frame.pack(fill="x", padx=6, pady=(6, 2))
+        self.time_nav_label = tk.Label(
+            self.time_nav_frame,
+            text="Timeline",
+            bg=BG,
+            fg=MUTED,
+            font=self.subtitle_font,
+        )
+        self.time_nav_label.pack(side="left")
+        self.time_nav_range = tk.Label(
+            self.time_nav_frame,
+            text="",
+            bg=BG,
+            fg=MUTED,
+            font=self.subtitle_font,
+        )
+        self.time_nav_range.pack(side="right")
+        self.time_nav_scale = tk.Scale(
+            self.time_nav_frame,
+            from_=0,
+            to=0,
+            resolution=10,
+            orient="horizontal",
+            showvalue=0,
+            length=420,
+            variable=self.time_offset_var,
+            command=lambda _v: self._on_time_scroll(),
+        )
+        self.time_nav_scale.pack(fill="x", expand=True, padx=(12, 12))
         self.players_grid = tk.Frame(self.players_frame, bg=BG)
         self.players_grid.pack(fill="both", expand=True)
         self.placeholder = tk.Label(
@@ -1210,6 +1243,11 @@ class HRDisplayApp:
         self._apply_session_theme(self.inline_view, bg, text, muted)
         if self.window_view:
             self._apply_session_theme(self.window_view, bg, text, muted)
+        self.time_nav_frame.configure(bg=bg)
+        self.time_nav_label.configure(bg=bg, fg=muted)
+        self.time_nav_range.configure(bg=bg, fg=muted)
+        trough = theme["panel"] if theme else PANEL
+        self.time_nav_scale.configure(bg=bg, fg=text, highlightbackground=bg, troughcolor=trough)
         self.controls_frame.configure(bg=bg)
         status_color = muted if self.global_status in ("WAITING", "DISCONNECTED") else text
         self.status_label.configure(bg=bg, fg=status_color, text=self.global_status)
@@ -1259,6 +1297,25 @@ class HRDisplayApp:
         player.stats.configure(bg=bg, fg=muted)
 
     def _update_chart(self) -> None:
+        now = time.time()
+        earliest = None
+        for player in self.players.values():
+            if player.history:
+                t = player.history[0][0]
+                earliest = t if earliest is None else min(earliest, t)
+        if earliest is not None:
+            max_offset = max(0.0, now - earliest - self.window_secs)
+            if abs(max_offset - self.max_time_offset) > 1.0:
+                self.max_time_offset = max_offset
+                self.time_nav_scale.configure(to=max_offset)
+            if self.time_offset_var.get() > max_offset:
+                self.time_offset_var.set(max_offset)
+        else:
+            self.max_time_offset = 0.0
+            self.time_offset_var.set(0.0)
+            self.time_nav_scale.configure(to=0)
+            self.time_nav_range.config(text="")
+
         for idx, source in enumerate(self.player_order):
             player = self.players[source]
             canvas = player.canvas
@@ -1266,7 +1323,6 @@ class HRDisplayApp:
             canvas.delete("log")
             w = canvas.winfo_width() or 480
             h = canvas.winfo_height() or 320
-            now = time.time()
             if (now - self.debug_chart_last_ts) > 2.0:
                 self._debug(f"chart canvas={w}x{h} frame={player.frame.winfo_width()}x{player.frame.winfo_height()}")
                 self.debug_chart_last_ts = now
@@ -1313,12 +1369,12 @@ class HRDisplayApp:
                 continue
 
             t_now = time.time()
-            t_min = t_now - self.window_secs
+            offset = float(self.time_offset_var.get())
+            t_max = t_now - offset
+            t_min = t_max - self.window_secs
             values = [v for (_, v) in player.history]
-            v_min = max(self.hr_min, min(values) - 5)
-            v_max = min(self.hr_max, max(values) + 5)
-            if v_max == v_min:
-                v_max = v_min + 1
+            v_min = self.hr_min
+            v_max = self.hr_max
 
             points = []
             for t, v in player.history:
@@ -1355,6 +1411,24 @@ class HRDisplayApp:
                 font=("Helvetica", 10),
                 tags="chart",
             )
+            tick_count = 3 if self.window_secs >= 6 * 3600 else 5
+            for i in range(tick_count):
+                denom = max(1, tick_count - 1)
+                x = lerp(x0, x1, i / denom)
+                canvas.create_line(x, y1, x, y1 + 6, fill=player.theme["grid"], width=1, tags="chart")
+                t_label = t_min + (t_max - t_min) * i / denom
+                if self.window_secs >= 6 * 3600:
+                    label = datetime.fromtimestamp(t_label).strftime("%m-%d %H:%M")
+                else:
+                    label = datetime.fromtimestamp(t_label).strftime("%H:%M")
+                canvas.create_text(
+                    x,
+                    y1 + 18,
+                    text=label,
+                    fill=player.theme["muted"],
+                    font=("Helvetica", 8),
+                    tags="chart",
+                )
 
             last_hr = player.current_hr if player.current_hr is not None else values[-1]
             gap = time.time() - player.last_sample_time if player.last_sample_time else None
@@ -1374,7 +1448,18 @@ class HRDisplayApp:
                 canvas.tag_raise("log")
             canvas.tag_raise("led")
 
+        if earliest is not None:
+            t_end = now - float(self.time_offset_var.get())
+            t_start = t_end - self.window_secs
+            fmt = "%m-%d %H:%M" if self.window_secs >= 6 * 3600 else "%H:%M"
+            self.time_nav_range.config(
+                text=f"{datetime.fromtimestamp(t_start).strftime(fmt)} → {datetime.fromtimestamp(t_end).strftime(fmt)}"
+            )
+
         self.root.after(500, self._update_chart)
+
+    def _on_time_scroll(self) -> None:
+        self.time_offset_var.set(max(0.0, min(float(self.time_offset_var.get()), self.max_time_offset)))
 
     def _update_session_view(self) -> None:
         if not self.session_active and not self.session_result:
@@ -1549,7 +1634,7 @@ def main() -> None:
     default_file = base_dir / "data" / "hr_stream.jsonl"
     default_sources = base_dir / "data" / "hr_sources.json"
     ap.add_argument("--file", default=str(default_file))
-    ap.add_argument("--window", type=int, default=1800, help="History window (seconds)")
+    ap.add_argument("--window", type=int, default=86400, help="History window (seconds)")
     ap.add_argument("--min", dest="hr_min", type=int, default=50)
     ap.add_argument("--max", dest="hr_max", type=int, default=200)
     ap.add_argument("--duration", type=float, default=None, help="Auto-close after N seconds (test)")

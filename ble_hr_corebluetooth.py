@@ -48,6 +48,8 @@ class HRDelegate(NSObject):
         self.last_scan_start = None
         self.pending_reconnect = {}
         self.reconnect_interval = 5.0
+        self.blocked_ids = {}
+        self.blocked_ttl = 60.0
         self.outfile = None
         self.outfh = None
         self.name_filters = []
@@ -159,6 +161,11 @@ class HRDelegate(NSObject):
     @objc.python_method
     def _match_device(self, peripheral, advertisementData) -> bool:
         device_id = peripheral.identifier().UUIDString()
+        if device_id in self.blocked_ids:
+            until = self.blocked_ids.get(device_id, 0.0)
+            if time.time() < until:
+                return False
+            del self.blocked_ids[device_id]
         if self.id_filters:
             ok = False
             for want in self.id_filters:
@@ -231,6 +238,14 @@ class HRDelegate(NSObject):
         count = len(self.connected_ids) + len(self.connecting_ids)
         return count >= self.max_devices
 
+    @objc.python_method
+    def _block_device(self, device_id: str, reason: str) -> None:
+        self.blocked_ids[device_id] = time.time() + self.blocked_ttl
+        if device_id in self.pending_reconnect:
+            del self.pending_reconnect[device_id]
+        label = self.name_by_id.get(device_id, device_id)
+        print(f"{reason} Ignoring {label} for {self.blocked_ttl:.0f}s.", file=sys.stderr, flush=True)
+
     def centralManagerDidUpdateState_(self, central):
         self.central = central
         if central.state() != CBManagerStatePoweredOn:
@@ -300,6 +315,8 @@ class HRDelegate(NSObject):
         if device_id in self.connected_ids:
             self.connected_ids.remove(device_id)
         print("Disconnected.", file=sys.stderr, flush=True)
+        if device_id in self.blocked_ids and time.time() < self.blocked_ids.get(device_id, 0.0):
+            return
         self._schedule_reconnect(device_id, "Disconnected.")
 
     def peripheral_didDiscoverServices_(self, peripheral, error):
@@ -307,18 +324,36 @@ class HRDelegate(NSObject):
             device_id = peripheral.identifier().UUIDString()
             self._schedule_reconnect(device_id, "Service discovery failed.")
             return
+        found = False
         for service in peripheral.services() or []:
             if service.UUID().isEqual_(HR_SERVICE):
+                found = True
                 peripheral.discoverCharacteristics_forService_([HR_MEAS], service)
+        if not found:
+            device_id = peripheral.identifier().UUIDString()
+            self._block_device(device_id, "No Heart Rate service.")
+            try:
+                self.central.cancelPeripheralConnection_(peripheral)
+            except Exception:
+                pass
 
     def peripheral_didDiscoverCharacteristicsForService_error_(self, peripheral, service, error):
         if error is not None:
             device_id = peripheral.identifier().UUIDString()
             self._schedule_reconnect(device_id, "Characteristic discovery failed.")
             return
+        found = False
         for char in service.characteristics() or []:
             if char.UUID().isEqual_(HR_MEAS):
+                found = True
                 peripheral.setNotifyValue_forCharacteristic_(True, char)
+        if not found:
+            device_id = peripheral.identifier().UUIDString()
+            self._block_device(device_id, "No Heart Rate characteristic.")
+            try:
+                self.central.cancelPeripheralConnection_(peripheral)
+            except Exception:
+                pass
 
     def peripheral_didUpdateValueForCharacteristic_error_(self, peripheral, characteristic, error):
         if error is not None:
